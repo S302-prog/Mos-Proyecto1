@@ -1,0 +1,9 @@
+﻿Parameter;Value;Unit;Description
+fuel_price;16300;COP/liter;Fuel price for vehicles
+cost_transport_km;3000;COP/km;Transport cost per kilometer
+cost_maintenance_km;500;COP/km;Maintenance cost per kilometer
+operational_cost_vehicle;50000;COP/vehicle/day;Fixed daily cost per vehicle
+fuel_efficiency;7.9;km/L;Fuel efficiency of vehicles
+driver_salary_hour;20000;COP/hour;Driver salary per hour
+driver_salary_minute;333.33;COP/minute;Driver salary per minute
+average_speed;40;km/h;Assumed average vehicle speed
