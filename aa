@@ -1,0 +1,134 @@
+from pyomo.opt import SolverStatus, TerminationCondition
+
+st = results_C2.solver.status
+tc = results_C2.solver.termination_condition
+
+print(f"Estado: {st}")
+print(f"Terminación: {tc}")
+
+if tc in [TerminationCondition.infeasible,
+          TerminationCondition.unbounded,
+          TerminationCondition.infeasibleOrUnbounded]:
+    print("No se encontró solución factible")
+else:
+    if tc == TerminationCondition.optimal and st == SolverStatus.ok:
+        print("Solución Óptima encontrada.")
+    elif tc == TerminationCondition.maxTimeLimit:
+        print("Solución factible encontrada (mejor solución antes del tiempo límite).")
+    else:
+        print("Solución factible encontrada con condición de terminación:", tc)
+    try:
+        print(f"Valor objetivo: {value(model_C2.obj):.2f} COP")
+    except:
+        print("No se pudo evaluar el valor objetivo.")
+
+# Extraer rutas
+rutas_solucion = []
+vehiculos_usados = []
+
+for v in model_C2.Vehicles:
+    if value(model_C2.y[v]) > 0.5:  # Vehiculo usado
+        vehiculos_usados.append(v)
+        # Construir la ruta 
+        ruta = []
+        actual = "CD01"
+        ruta.append(actual)
+        visitados = set([actual])
+        
+        # Buscar siguiente nodo desde CD01
+        siguiente = None
+        for j in model_C2.Locations:
+            if j != actual and value(model_C2.x[v, actual, j]) > 0.5:
+                siguiente = j
+                break
+        
+        # Seguir la ruta hasta volver al CD
+        max_iteraciones = len(model_C2.Locations) 
+        iteracion = 0
+        while siguiente and siguiente != "CD01" and iteracion < max_iteraciones:
+            if siguiente in visitados:
+                break  
+            ruta.append(siguiente)
+            visitados.add(siguiente)
+            actual = siguiente
+            siguiente = None
+            for j in model_C2.Locations:
+                if j != actual and value(model_C2.x[v, actual, j]) > 0.5:
+                    siguiente = j
+                    break
+            iteracion += 1
+        
+        if len(ruta) > 1:
+            ruta.append("CD01")
+            rutas_solucion.append((v, ruta))
+
+print(f"\nVehículos utilizados: {len(vehiculos_usados)}")
+for v, ruta in rutas_solucion:
+    print(f"  {v}: {' -> '.join(ruta)}")
+
+# Metricas
+resultados_verificacion = []
+
+for v, ruta in rutas_solucion:
+
+    vehicle_id = v
+    vehicle_type = "Truck" 
+    
+    # Calcular demanda atendida
+    clients_served = [nodo for nodo in ruta if nodo != "CD01"]
+    demand_satisfied = sum(demand_dict[c] for c in clients_served)
+    
+    # Calcular distancia total
+    total_distance = 0
+    for i in range(len(ruta) - 1):
+        total_distance += distance_dict[(ruta[i], ruta[i+1])]
+    
+    # Calcular tiempo total
+    total_time_minutes = 0
+    for i in range(len(ruta) - 1):
+        total_time_minutes += time_matrix_C2.loc[ruta[i], ruta[i+1]]
+    
+    # Calcular costo
+    total_cost = 0
+    # Costo fijo
+    if value(model_C2.y[v]) > 0.5:
+        total_cost += value(model_C2.C_fixed)
+    # Costos variables 
+    for i in range(len(ruta) - 1):
+        total_cost += cost_dict[(ruta[i], ruta[i+1])]
+    
+    # Formatear ruta 
+    route_sequence = " - ".join(ruta)
+    
+    # Formatear clientes 
+    clients_served_str = ", ".join(clients_served)
+    
+    # Formatear demanda satisfecha por cliente
+    demand_satisfied_list = [f"{c}:{demand_dict[c]}" for c in clients_served]
+    demand_satisfied_str = ", ".join(demand_satisfied_list)
+    
+    # Formatear tiempo total (HH:MM)
+    horas = int(total_time_minutes // 60)
+    minutos = int(total_time_minutes % 60)
+    total_time_str = f"{horas:02d}:{minutos:02d}"
+    
+    resultados_verificacion.append({
+        "VehicleId": vehicle_id,
+        "VehicleType": vehicle_type,
+        "InitialLoad": demand_satisfied,  
+        "RouteSequence": route_sequence,
+        "ClientsServed": clients_served_str,
+        "DemandSatisfied": demand_satisfied_str,
+        "TotalDistance": round(total_distance, 2),
+        "TotalTime": total_time_str,
+        "Cost": round(total_cost, 2)
+    })
+
+df_verificacion = pd.DataFrame(resultados_verificacion)
+df_verificacion.to_csv("verificacion_caso1.csv", index=False)
+
+print(f"\nResumen:")
+print(f"  Total vehículos usados: {len(vehiculos_usados)}")
+if results_C2.solver.status == SolverStatus.ok:
+    print(f"  Costo total: {value(model_C2.obj):.2f} COP")
+print(f"\n{df_verificacion.to_string(index=False)}")
