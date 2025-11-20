@@ -1,0 +1,175 @@
+import numpy as np
+from pyomo.environ import *
+import pandas as pd
+
+
+
+# Crear modelo Pyomo
+model_C3 = ConcreteModel()
+Lugares = Puntos["StandardizedID"]
+# Conjuntos
+locations = Lugares.copy()           
+clients   = [loc for loc in locations if loc != "CD01"]
+vehicles  = list(vehicles_C3["StandardizedID"])
+model_C3.Locations = Set(initialize=locations)
+model_C3.Clients   = Set(initialize=clients)
+model_C3.Vehicles  = Set(initialize=vehicles)
+
+# Parametros
+demand_dict = dict(zip(clients_C3["StandardizedID"], clients_C3["Demand"]))
+demand_dict["CD01"] = 0 
+capacity_dict = dict(zip(vehicles_C3["StandardizedID"], vehicles_C3["Capacity"]))
+range_dict    = dict(zip(vehicles_C3["StandardizedID"], vehicles_C3["Range"]))
+inicioTiempo =  dict(zip(Puntos['StandardizedID'].tolist(), Puntos['StartWindow'].tolist())) 
+finTiempo =  dict(zip(Puntos['StandardizedID'].tolist(), Puntos['EndtWindow'].tolist())) 
+
+# Matrices de distancia y costo
+distance_dict = distanciasP
+cost_dict   = Matriz_costos
+
+
+model_C3.HI_i= Param(model_C3.Locations, initialize = inicioTiempo)
+model_C3.HF_i= Param(model_C3.Locations, initialize = finTiempo)
+model_C3.Demand   = Param(model_C3.Locations, initialize=demand_dict, default=0)
+model_C3.Capacity = Param(model_C3.Vehicles,  initialize=capacity_dict)
+model_C3.Range    = Param(model_C3.Vehicles,  initialize=range_dict)
+model_C3.Distance = Param(model_C3.Locations, model_C3.Locations, initialize=distance_dict)
+model_C3.Cost     = Param(model_C3.Vehicles, model_C3.Locations, model_C3.Locations, initialize=cost_dict)
+
+
+
+# Variables de decision
+
+model_C3.x = Var(model_C3.Vehicles,
+                 model_C3.Locations,
+                 model_C3.Locations,
+                 within=Binary)
+
+# Vehiculo activado (w_v)
+model_C3.y = Var(model_C3.Vehicles, within=Binary)
+
+# Orden de visita
+model_C3.u = Var(model_C3.Vehicles,
+                 model_C3.Clients,
+                 within=NonNegativeIntegers,
+                 bounds=(0, len(clients)))
+
+model_C3.h = Var(model_C3.Vehicles, model_C3.Locations,model_C3.Locations, bounds =(1 , 1440),  within=Integers)
+
+# Función objetivo 
+def objective_rule(model):
+    variable_costs = sum(model.Cost[v, i, j] * model.x[v, i, j]
+                         for v in model.Vehicles
+                         for i in model.Locations
+                         for j in model.Locations)
+    
+    return  variable_costs
+
+model_C3.obj = Objective(rule=objective_rule, sense=minimize)
+
+# Restricciones 
+
+# 1. Capacidad
+def distribucion_rule(model, v):
+    return sum(model.Demand[j] * model.x[v, i, j]
+               for i in model.Locations
+               for j in model.Clients) <= model.Capacity[v]
+
+model_C3.distribucion = Constraint(model_C3.Vehicles, rule=distribucion_rule)
+
+# 2. Devolucion
+def start_depot_rule(model, v):
+    return sum(model.x[v, "CD01", j]
+               for j in model.Locations if j != "CD01") == model.y[v]
+
+# Entra a CD01
+def end_depot_rule(model, v):
+    return sum(model.x[v, i, "CD01"]
+               for i in model.Locations if i != "CD01") == model.y[v]
+
+model_C3.start_depot = Constraint(model_C3.Vehicles, rule=start_depot_rule)
+model_C3.end_depot   = Constraint(model_C3.Vehicles, rule=end_depot_rule)
+
+# 3. Autonomia
+def autonomia_rule(model, v):
+    return sum(model.Distance[i, j] * model.x[v, i, j]
+               for i in model.Locations
+               for j in model.Locations) <= model.Range[v] * model.y[v]
+
+model_C3.autonomia = Constraint(model_C3.Vehicles, rule=autonomia_rule)
+
+# 4. TSP
+def tsp_rule(model, j):
+    if j != "CD01":
+        return sum(model.x[v, i, j]
+                   for v in model.Vehicles
+                   for i in model.Locations) == 1
+    return Constraint.Skip
+
+model_C3.tsp = Constraint(model_C3.Locations, rule=tsp_rule)
+
+# 5. Solo un camino 
+N = len(clients)  
+
+def solo_un_camino_rule(model, v, i, j):
+    if i != j:
+        return model.u[v, i] - model.u[v, j] + N * model.x[v, i, j] <= N - 1
+    return Constraint.Skip
+
+model_C3.solo_un_camino = Constraint(model_C3.Vehicles,
+                                     model_C3.Clients,
+                                     model_C3.Clients,
+                                     rule=solo_un_camino_rule)
+
+# 6. Control de flujo
+def control_flujo_rule(model, v, i):
+    if i == "CD01":
+        return Constraint.Skip
+    return (sum(model.x[v, i, j] for j in model.Locations) ==
+            sum(model.x[v, k, i] for k in model.Locations))
+
+model_C3.control_flujo = Constraint(model_C3.Vehicles,
+                                    model_C3.Locations,
+                                    rule=control_flujo_rule)
+
+# 7. Big M
+n = len(clients)  # número de clientes
+
+def uso_camion_rule(model, v):
+    return sum(model.x[v, i, j]
+               for i in model.Locations
+               for j in model.Locations) <= model.y[v] * n
+
+model_C3.uso_camion = Constraint(model_C3.Vehicles, rule=uso_camion_rule)
+
+# Restriccion adicional: Prohibir arcos de un nodo a sí mismo
+def no_self_loop_rule(model, v, i):
+    return model.x[v, i, i] == 0
+
+model_C3.no_self_loop = Constraint(model_C3.Vehicles,
+                                   model_C3.Locations,
+                                   rule=no_self_loop_rule)
+
+# Tiempo
+def restriccion_tiempo_Inico(model, v, i , j):
+    return (model_C3.h[v, i,j] >= model.HI_i[i])
+model_C3.startWindow = Constraint(model_C3.Vehicles, model_C3.Locations, model_C3.Locations, rule = restriccion_tiempo_Inico)
+
+def restriccion_tiempo_Fin(model, v, i , j):
+    return (model.h[v, i,j] <= model.HF_i[i])
+model_C3.endWindow = Constraint(model_C3.Vehicles, model_C3.Locations, model_C3.Locations, rule = restriccion_tiempo_Fin)
+
+# Resolver 
+
+solver_C3 = SolverFactory('gurobi')
+
+
+results_C3 = solver_C3.solve(model_C3, tee=True)
+
+print(f"\n{'='*60}")
+print(f"Condición de terminación: {results_C3.solver.termination_condition}")
+try:
+    print(f"Valor objetivo: {value(model_C3.obj):.2f} COP")
+except:
+    print("No se pudo evaluar el valor objetivo (posible modelo infactible).")
+print(f"{'='*60}")
